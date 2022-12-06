@@ -1,132 +1,154 @@
-use crate::CraneModel::*;
-use lazy_static::lazy_static;
-use regex::Regex;
+#![feature(get_many_mut)]
 
-const INPUT: &str = include_str!("../input.txt");
+// Heavily inspired by https://fasterthanli.me/series/advent-of-code-2022/part-5
+
+use crate::CraneModel::*;
+
+use std::fmt;
+
+use nom::{
+    branch::alt,
+    bytes::complete::{tag, take},
+    combinator::{all_consuming, map},
+    multi::separated_list1,
+    sequence::{delimited, preceded, tuple},
+    Finish, IResult,
+};
 
 enum CraneModel {
     CrateMover9000,
     CrateMover9001,
 }
 
-fn get_stacks(input: &str) -> Vec<String> {
-    lazy_static! {
-        static ref RE: Regex =
-            Regex::new(r"^(...)\s(...)\s(...)\s(...)\s(...)\s(...)\s(...)\s(...)\s?(.*?)$")
-                .unwrap();
-    }
-    let mut stacks = vec![
-        // "".to_string(),
-        /* 1 */ "".to_string(),
-        /* 2 */ "".to_string(),
-        /* 3 */ "".to_string(),
-        /* 4 */ "".to_string(),
-        /* 5 */ "".to_string(),
-        /* 6 */ "".to_string(),
-        /* 7 */ "".to_string(),
-        /* 8 */ "".to_string(),
-        /* 9 */ "".to_string(),
-    ];
+#[derive(Clone, Copy)]
+struct Crate(char);
 
-    for line in input.lines().take(8) {
-        if let Some(groups) = RE.captures(line) {
-            let strings: String = groups
-                .iter()
-                .skip(1)
-                .map(|s| {
-                    // Get rid of whitespace so we are only left with "crates"
-                    if let Some(r) = s {
-                        r.as_str().replace("   ", " ")
-                    } else {
-                        "".to_string()
-                    }
-                })
-                .collect::<String>()
-                // Remove [ ] around crates
-                .replace(['[', ']'], "");
-
-            (0..=8).for_each(|i| {
-                if let Some(new_char) = strings.chars().nth(i) {
-                    let curr = &stacks[i];
-                    let new = format!("{}{}", curr, new_char);
-                    stacks[i] = new.replace(' ', "");
-                }
-            });
-        }
+impl fmt::Debug for Crate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
-    let stacks: Vec<String> = stacks
-        .iter()
-        .map(|s| s.chars().rev().collect::<String>())
-        .collect();
-    stacks
 }
 
-fn crane(input: &str, crane_model: CraneModel) -> String {
-    let mut stacks = get_stacks(input);
-    stacks.insert(0, "".to_string()); // easier indexing x_X
+struct Piles(Vec<Vec<Crate>>);
 
-    // Hand-written stacks "cheat"
-    // let mut stacks = vec![
-    //     "".to_string(),
-    //     /* 1 */ "ZPMHR".to_string(),
-    //     /* 2 */ "PCJB".to_string(),
-    //     /* 3 */ "SNHGLCD".to_string(),
-    //     /* 4 */ "FTMDQSRL".to_string(),
-    //     /* 5 */ "FSPQBTZM".to_string(),
-    //     /* 6 */ "TFSZBG".to_string(),
-    //     /* 7 */ "NRV".to_string(),
-    //     /* 8 */ "PGLTDVCM".to_string(),
-    //     /* 9 */ "WQNJFML".to_string(),
-    // ];
-
-    lazy_static! {
-        // Example: move 7 from 3 to 9 => { num_crates=7, from=3, to=9 }
-        static ref RE: Regex = Regex::new(
-            r"move (?P<num_crates>\d{1,}) from (?P<from>\d) to (?P<to>\d)"
-        )
-        .unwrap();
+impl fmt::Debug for Piles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, pile) in self.0.iter().enumerate() {
+            writeln!(f, "Pile {i}: {pile:?}")?;
+        }
+        Ok(())
     }
-    for line in input.lines().skip(10) {
-        if let Some(groups) = RE.captures(line) {
-            let num_crates = groups["num_crates"].parse::<usize>().unwrap();
-            let from = groups["from"].parse::<usize>().unwrap();
-            let to = groups["to"].parse::<usize>().unwrap();
+}
+impl Piles {
+    fn apply(&mut self, ins: Instruction, crane_model: &CraneModel) {
+        let [src, dst] = self
+            .0
+            .get_many_mut([ins.src, ins.dst])
+            .expect("out of bounds / overlapping src/dst stacks");
 
-            let from_stack = stacks[from].clone();
-            let to_stack = stacks[to].clone();
-
-            // get the leftover and taken crates by slicing strings
-            let slice_index = from_stack.len() - num_crates;
-            let leftover = &from_stack[..slice_index];
-            let taken_crates = &from_stack[slice_index..];
-
-            let dest_stack = match crane_model {
-                // Part 1: simulate grabbing one crate at a time
-                CrateMover9000 => format!(
-                    "{}{}",
-                    to_stack,
-                    taken_crates.chars().rev().collect::<String>()
-                ),
-                // Part 2: grab all crates simultaneously
-                CrateMover9001 => format!("{}{}", to_stack, taken_crates),
-            };
-
-            stacks[from] = leftover.to_string();
-            stacks[to] = dest_stack;
+        match crane_model {
+            CrateMover9000 => dst.extend(src.drain((src.len() - ins.quantity)..).rev()),
+            CrateMover9001 => dst.extend(src.drain((src.len() - ins.quantity)..)),
         }
     }
+}
 
-    // return the last/top crate in each stack, concatenated to a String.
-    stacks
-        .iter()
-        .skip(1)
-        .map(|s| s.chars().last().unwrap())
+#[derive(Debug)]
+struct Instruction {
+    quantity: usize,
+    src: usize,
+    dst: usize,
+}
+
+fn parse_crate(i: &str) -> IResult<&str, Crate> {
+    let first_char = |s: &str| Crate(s.chars().next().unwrap());
+    let f = delimited(tag("["), take(1_usize), tag("]"));
+    map(f, first_char)(i)
+}
+
+fn parse_hole(i: &str) -> IResult<&str, ()> {
+    // `drop` takes a value and returns nothing, which is perfect for our case
+    map(tag("   "), drop)(i)
+}
+
+fn parse_crate_or_hole(i: &str) -> IResult<&str, Option<Crate>> {
+    alt((map(parse_crate, Some), map(parse_hole, |_| None)))(i)
+}
+
+fn parse_crate_line(i: &str) -> IResult<&str, Vec<Option<Crate>>> {
+    separated_list1(tag(" "), parse_crate_or_hole)(i)
+}
+
+fn parse_number(i: &str) -> IResult<&str, usize> {
+    map(nom::character::complete::u32, |n| n as _)(i)
+}
+
+// convert from 1-indexed to 0-indexed
+fn parse_pile_number(i: &str) -> IResult<&str, usize> {
+    map(parse_number, |i| i - 1)(i)
+}
+
+// Parse lines like "move # from # to #"
+fn parse_instruction(i: &str) -> IResult<&str, Instruction> {
+    map(
+        tuple((
+            preceded(tag("move "), parse_number),
+            preceded(tag(" from "), parse_pile_number),
+            preceded(tag(" to "), parse_pile_number),
+        )),
+        |(quantity, src, dst)| Instruction { quantity, src, dst },
+    )(i)
+}
+
+// Transpose rows to columns
+fn transpose_rev<T>(v: Vec<Vec<Option<T>>>) -> Vec<Vec<T>> {
+    assert!(!v.is_empty());
+    let len = v[0].len();
+    let mut iters: Vec<_> = v.into_iter().map(|n| n.into_iter()).collect();
+    (0..len)
+        .map(|_| {
+            let mut v = Vec::with_capacity(256); // just to be on the safe side
+            v.extend(iters.iter_mut().rev().filter_map(|n| n.next().unwrap()));
+            v
+        })
         .collect()
 }
 
+fn process_input(input: &str, crane_model: CraneModel) -> String {
+    let mut lines = input.lines();
+
+    let crate_lines: Vec<_> = lines
+        .by_ref()
+        .map_while(|line| {
+            all_consuming(parse_crate_line)(line)
+                .finish()
+                .ok()
+                .map(|(_, line)| line)
+        })
+        .collect();
+
+    let mut piles = Piles(transpose_rev(crate_lines));
+
+    // we've consumed the "numbers line" but not the separating line
+    assert!(lines.next().unwrap().is_empty());
+
+    for ins in lines.map(|line| all_consuming(parse_instruction)(line).finish().unwrap().1) {
+        piles.apply(ins, &crane_model);
+    }
+
+    // return the top crate from each pile
+    piles
+        .0
+        .iter()
+        .map(|pile| pile.last().unwrap().0)
+        .collect::<String>()
+}
+
 fn main() {
-    println!("Part 1: {}", crane(INPUT, CrateMover9000));
-    println!("Part 2: {}", crane(INPUT, CrateMover9001));
+    const INPUT: &str = include_str!("../input.txt");
+
+    println!("Part 1: {}", process_input(INPUT, CrateMover9000));
+    println!("Part 2: {}", process_input(INPUT, CrateMover9001));
 }
 
 #[cfg(test)]
@@ -134,12 +156,18 @@ mod tests {
     use super::*;
 
     const INPUT: &str = include_str!("../input.txt");
+    const TEST_INPUT: &str = include_str!("../test_input.txt");
 
     #[test]
-    fn test_input() {
-        // part 1
-        assert_eq!(crane(INPUT, CrateMover9000), "VQZNJMWTR");
-        // part 2
-        assert_eq!(crane(INPUT, CrateMover9001), "NLCDCLVMQ");
+    fn part_1() {
+        // grab one crate at a time
+        assert_eq!(process_input(TEST_INPUT, CrateMover9000), "CMZ");
+        assert_eq!(process_input(INPUT, CrateMover9000), "VQZNJMWTR");
+    }
+    #[test]
+    fn part_2() {
+        // grab many crates simultaneously
+        assert_eq!(process_input(TEST_INPUT, CrateMover9001), "MCD");
+        assert_eq!(process_input(INPUT, CrateMover9001), "NLCDCLVMQ");
     }
 }
