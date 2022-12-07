@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use unicode_segmentation::UnicodeSegmentation;
 
 const INPUT: &str = include_str!("../input.txt");
 
@@ -7,16 +8,15 @@ fn main() {
     println!("Part 2: {}", decode(INPUT, 14));
 }
 
+// Return the string index after marker_size consecutive unique characters
 fn decode(input: &str, marker_size: usize) -> usize {
-    // Return the string index after marker_size consecutive unique characters
-    for i in 0..input.len() - marker_size + 1 {
-        let window = &input[i..i + marker_size];
-        let set: HashSet<char> = window.chars().collect();
-        if set.len() == marker_size {
-            return i + marker_size;
-        }
-    }
-    0
+    input
+        .graphemes(true)
+        .collect::<Vec<&str>>()
+        .windows(marker_size)
+        .position(|window| window.iter().collect::<HashSet<_>>().len() == marker_size)
+        .map(|pos| pos + marker_size)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -28,6 +28,8 @@ mod tests {
     #[test]
     fn part1() {
         assert_eq!(decode("mjqjpqmgbljsphdztnvjfqwrcgsmlb", 4), 7);
+        assert_eq!(decode("åjqjpqågbljsphdztnvjfqwrcgsålb", 4), 7);
+        assert_eq!(decode("🦀jqjpq🦀gbljsphdztnvjfqwrcgs🦀lb", 4), 7);
         assert_eq!(decode("bvwbjplbgvbhsrlpgdmjqwftvncz", 4), 5);
         assert_eq!(decode("nppdvjthqldpwncqszvftbrmjlhg", 4), 6);
         assert_eq!(decode("nznrnfrfntjfmvfwmzdfjlvtqnbhcprsg", 4), 10);
@@ -38,6 +40,8 @@ mod tests {
     #[test]
     fn part2() {
         assert_eq!(decode("mjqjpqmgbljsphdztnvjfqwrcgsmlb", 14), 19);
+        assert_eq!(decode("åjqjpqågbljsphdztnvjfqwrcgsålb", 14), 19);
+        assert_eq!(decode("🦀jqjpq🦀gbljsphdztnvjfqwrcgs🦀lb", 14), 19);
         assert_eq!(decode("bvwbjplbgvbhsrlpgdmjqwftvncz", 14), 23);
         assert_eq!(decode("nppdvjthqldpwncqszvftbrmjlhg", 14), 23);
         assert_eq!(decode("nznrnfrfntjfmvfwmzdfjlvtqnbhcprsg", 14), 29);
